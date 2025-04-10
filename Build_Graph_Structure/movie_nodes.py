@@ -10,7 +10,7 @@ driver = GraphDatabase.driver(uri, auth=(username, password))
 def create_movie_batch(tx, batch):
     query = """
     UNWIND $batch AS row
-    CREATE (m:Movie {
+    MERGE (m:Movie {
         tconst: row['tconst'],
         titleType: row['titleType'],
         primaryTitle: row['primaryTitle'],
@@ -25,8 +25,8 @@ def create_movie_batch(tx, batch):
     tx.run(query, batch=batch)
 
 def create_movie_indexes(tx):
-    tx.run("CREATE INDEX movie_tconst FOR (m:Movie) ON (m.tconst)")
-    print("Index created for Movie.tconst")
+    tx.run("CREATE OR REPLACE INDEX movie_tconst FOR (m:Movie) ON (m.tconst)")
+    print("Index created or replaced for Movie.tconst")
 
 file_path = "/Users/benzuckerman/Documents/GitHub/7degrees-of-bacon/imdb_data_files/title.tsv"
 batch_size = 10000

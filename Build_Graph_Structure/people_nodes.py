@@ -38,8 +38,8 @@ def create_single_person(tx):
     tx.run(query)
 
 def create_person_indexes(tx):
-    tx.run("CREATE INDEX person_nconst FOR (p:Person) ON (p.nconst)")
-    print("Index created for Person.nconst")
+    tx.run("CREATE OR REPLACE INDEX person_nconst FOR (p:Person) ON (p.nconst)")
+    print("Index created or replaced for Person.nconst")
 
 file_path_names = "/Users/benzuckerman/Documents/GitHub/7onKevin/Data_Files/names.tsv"
 file_path_principals = "/Users/benzuckerman/Documents/GitHub/7onKevin/Data_Files/princpals.tsv"
