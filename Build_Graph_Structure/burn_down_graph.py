@@ -41,4 +41,3 @@ def delete_all_nodes_batched(driver, batch_size=5000):
     driver.close()
     print("Driver closed.")
 
-delete_all_nodes_batched(driver)
