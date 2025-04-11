@@ -38,9 +38,11 @@ def delete_all_nodes_batched(driver, batch_size=5000):
             if deleted_count == 0:
                 break
 
-        elapsed_total_time = time.time() - start_time
-        print(f"Total of {total_deleted} nodes and relationships deleted in {elapsed_total_time:.2f} seconds.")
+    elapsed_total_time = time.time() - start_time
+    print(f"Total of {total_deleted} nodes and relationships deleted in {elapsed_total_time:.2f} seconds.")
 
     driver.close()
     print("Driver closed.")
 
+if __name__ == "__main__":
+    delete_all_nodes_batched(driver)
