@@ -1,9 +1,11 @@
+
 from neo4j import GraphDatabase
 import csv
 import time
 from dotenv import load_dotenv
 import os
 
+load_dotenv()
 uri = os.getenv("NEO4J_URI")
 username = os.getenv("NEO4J_USERNAME")
 password = os.getenv("NEO4J_PASSWORD")
@@ -46,3 +48,6 @@ def delete_all_nodes_batched(driver, batch_size=5000):
 
 if __name__ == "__main__":
     delete_all_nodes_batched(driver)
+
+
+
