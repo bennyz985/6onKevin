@@ -1,8 +1,15 @@
-
 from neo4j import GraphDatabase
 import csv
 import time
+from dotenv import load_dotenv
+import os
 
+uri = os.getenv("NEO4J_URI")
+username = os.getenv("NEO4J_USERNAME")
+password = os.getenv("NEO4J_PASSWORD")
+driver = GraphDatabase.driver(uri, auth=(username, password))
+imdb_data_dir = os.getenv("DATA_DIRECTORY")
+file_path = os.path.join(imdb_data_dir, "names.tsv")
 uri = "bolt://localhost:7687"
 username = "neo4j"
 password = "SixKevin"

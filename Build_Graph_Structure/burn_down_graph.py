@@ -1,9 +1,12 @@
 from neo4j import GraphDatabase
+import csv
 import time
+from dotenv import load_dotenv
+import os
 
-uri = "bolt://localhost:7687"
-username = "neo4j"
-password = "SixKevin"
+uri = os.getenv("NEO4J_URI")
+username = os.getenv("NEO4J_USERNAME")
+password = os.getenv("NEO4J_PASSWORD")
 driver = GraphDatabase.driver(uri, auth=(username, password))
 
 def delete_graph_batch(tx, batch_size):

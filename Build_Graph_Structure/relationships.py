@@ -1,13 +1,13 @@
-
-
 from neo4j import GraphDatabase
 import csv
 import time
+from dotenv import load_dotenv
+import os
 import json
 
-uri = "bolt://localhost:7687"
-username = "neo4j"
-password = "SixKevin"
+uri = os.getenv("NEO4J_URI")
+username = os.getenv("NEO4J_USERNAME")
+password = os.getenv("NEO4J_PASSWORD")
 driver = GraphDatabase.driver(uri, auth=(username, password))
 
 def create_played_role_relationships_batch(tx, batch):

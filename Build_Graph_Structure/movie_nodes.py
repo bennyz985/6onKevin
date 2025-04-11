@@ -1,11 +1,15 @@
 from neo4j import GraphDatabase
 import csv
 import time
+from dotenv import load_dotenv
+import os
 
-uri = "bolt://localhost:7687"
-username = "neo4j"
-password = "SixKevin"
+uri = os.getenv("NEO4J_URI")
+username = os.getenv("NEO4J_USERNAME")
+password = os.getenv("NEO4J_PASSWORD")
 driver = GraphDatabase.driver(uri, auth=(username, password))
+imdb_data_dir = os.getenv("DATA_DIRECTORY")
+file_path = os.path.join(imdb_data_dir, "titles.tsv")
 
 def create_movie_batch(tx, batch):
     query = """
@@ -28,7 +32,7 @@ def create_movie_indexes(tx):
     tx.run("CREATE OR REPLACE INDEX movie_tconst FOR (m:Movie) ON (m.tconst)")
     print("Index created or replaced for Movie.tconst")
 
-file_path = "/Users/benzuckerman/Documents/GitHub/7degrees-of-bacon/imdb_data_files/title.tsv"
+
 batch_size = 10000
 report_interval = 100000
 total_processed = 0

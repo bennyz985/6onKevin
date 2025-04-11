@@ -24,6 +24,7 @@ Environment variables.  Neo4j connection details need to be established in a `.e
         NEO4J_URI="bolt://localhost:7687"
         NEO4J_USERNAME="neo4j"
         NEO4J_PASSWORD="YourSecureNeo4jPassword"
+        DATA_DIRECTORY="YourLocalDirectoryFilePath"
 ```
 
 ## Source data
