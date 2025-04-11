@@ -17,7 +17,7 @@ after installation add the 'GDS' and 'APOC' plug-ins. [Enabling plugins video](h
     git lfs install
     ```
 
-3.  **IMDB Dataset Files:** The necessary IMDB dataset files (`title.tsv`, `name.tsv`, `principals.tsv`) located in the `data_files` directory will be automatically downloaded by Git LFS during the checkout process.
+3.  **IMDB Dataset Files:** The necessary IMDB dataset files (`title.tsv`, `name.tsv`, `principals.tsv`) are located in the `data_files` (should get coppied automatically when you clone the repository).
 
 4.  **Environment Variables (for Neo4j):**
 
