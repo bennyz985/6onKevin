@@ -1,3 +1,5 @@
+# building implied relationships is expensive, running this file takes a couple minutes to complete 
+
 from neo4j import GraphDatabase
 import csv
 import time
@@ -28,25 +30,30 @@ def create_played_role_relationships_batch(tx, batch):
     UNWIND $batch AS row
     MATCH (p:Person {nconst: row['nconst']})
     MATCH (m:Movie {tconst: row['tconst']})
-    WITH p, m, row,
-         CASE
-             WHEN row['category'] IN ['director', 'writer'] AND row['job'] <> '\\\\N' THEN row['job']
-             ELSE null
-         END AS job_value,
-         CASE
-             WHEN row['category'] IN ['actor', 'actress'] AND row['characters'] = '\\\\N' THEN ['Undefined']
-             WHEN row['category'] = 'self' AND (row['characters'] IS NOT NULL AND row['characters'] <> '\\\\N' AND row['characters'] <> '"Self"') THEN apoc.convert.fromJsonList(row['characters'])
-             WHEN row['characters'] IS NOT NULL AND row['characters'] <> '\\\\N' THEN apoc.convert.fromJsonList(row['characters'])
-             ELSE null
-         END AS characters_value
-    WHERE job_value IS NOT NULL OR characters_value IS NOT NULL
-    MERGE (p)-[r:PLAYED_ROLE_IN]->(m)
-    SET r += CASE
-        WHEN job_value IS NOT NULL THEN {job: job_value} ELSE {}
-    END
-    SET r += CASE
-        WHEN characters_value IS NOT NULL THEN {characters: characters_value} ELSE {}
-    END
+    MERGE (p)-[r:PLAYED_ROLE_IN {category: row['category'], characters: row['characters']}]->(m)
+    ON CREATE SET
+        r.job = CASE
+            WHEN row['category'] IN ['director', 'writer'] AND row['job'] <> '\\\\N' THEN row['job']
+            ELSE null
+        END,
+        r.characters = CASE
+            WHEN row['characters'] = '\\\\N' THEN 'Undefined'
+            WHEN row['characters'] IS NOT NULL AND row['characters'] <> '\\\\N' THEN row['characters']
+            ELSE null
+        END
+    ON MATCH SET
+        r.job = CASE
+            WHEN row['category'] IN ['director', 'writer'] AND row['job'] <> '\\\\N' THEN row['job']
+            ELSE r.job
+        END,
+        r.characters = CASE
+            WHEN row['characters'] = '\\\\N' THEN 'Undefined'
+            WHEN row['characters'] IS NOT NULL AND row['characters'] <> '\\\\N' THEN row['characters']
+            ELSE r.characters
+        END
+    WITH r
+    WHERE r.job IS NOT NULL OR r.characters IS NOT NULL
+    RETURN r
     """
     try:
         tx.run(query, batch=batch)
@@ -54,14 +61,6 @@ def create_played_role_relationships_batch(tx, batch):
         logging.error(f"Error creating/merging played role relationships batch: {e}. Batch data (first 5): {batch[:5]}")
         raise
 
-def create_played_role_relationship_indexes(tx):
-    try:
-        tx.run("CREATE INDEX played_role_job IF NOT EXISTS FOR ()-[r:PLAYED_ROLE_IN]-() ON (r.job)")
-        tx.run("CREATE INDEX played_role_characters IF NOT EXISTS FOR ()-[r:PLAYED_ROLE_IN]-() ON (r.characters)")
-        logging.info("Indexes created or checked for PLAYED_ROLE_IN relationships on properties 'job' and 'characters'.")
-    except Exception as e:
-        logging.error(f'Error creating relationship indexes: {e}')
-        raise
 
 def process_played_role_relationships(driver, file_path, batch_size, report_interval):
     total_processed = 0
