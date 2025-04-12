@@ -4,70 +4,133 @@ import time
 from dotenv import load_dotenv
 import os
 import json
+import logging
+import sys
 
+load_dotenv()
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 uri = os.getenv("NEO4J_URI")
 username = os.getenv("NEO4J_USERNAME")
 password = os.getenv("NEO4J_PASSWORD")
-driver = GraphDatabase.driver(uri, auth=(username, password))
+driver = None
+imdb_data_dir = os.getenv("DATA_DIRECTORY")
+file_path = os.path.join(imdb_data_dir, "principals.tsv")
+
+
+try:
+    driver = GraphDatabase.driver(uri, auth=(username, password))
+except Exception as e:
+    logging.critical(f"Failed to connect to Neo4j: {e}")
+    sys.exit(1)
 
 def create_played_role_relationships_batch(tx, batch):
     query = """
     UNWIND $batch AS row
     MATCH (p:Person {nconst: row['nconst']})
     MATCH (m:Movie {tconst: row['tconst']})
-    CREATE (p)-[:PLAYED_ROLE_IN {
-        job: CASE
-            WHEN row['category'] = 'director' THEN 'director'
-            WHEN row['category'] = 'writer' THEN 'writer'
-            WHEN row['job'] = '\\N' THEN null
-            ELSE row['job']
-        END,
-        characters: CASE
-            WHEN row['category'] IN ['actor', 'actress'] AND row['characters'] = '\\N' THEN ['Undefined']
-            WHEN row['category'] = 'self' AND (row['characters'] IS NOT NULL AND row['characters'] <> '\\N' AND row['characters'] <> '"Self"') THEN apoc.convert.fromJsonList(row['characters'])
-            WHEN row['characters'] IS NOT NULL AND row['characters'] <> '\\N' THEN apoc.convert.fromJsonList(row['characters'])
-            ELSE null
-        END
-    }]->(m)
+    WITH p, m, row,
+         CASE
+             WHEN row['category'] IN ['director', 'writer'] AND row['job'] <> '\\\\N' THEN row['job']
+             ELSE null
+         END AS job_value,
+         CASE
+             WHEN row['category'] IN ['actor', 'actress'] AND row['characters'] = '\\\\N' THEN ['Undefined']
+             WHEN row['category'] = 'self' AND (row['characters'] IS NOT NULL AND row['characters'] <> '\\\\N' AND row['characters'] <> '"Self"') THEN apoc.convert.fromJsonList(row['characters'])
+             WHEN row['characters'] IS NOT NULL AND row['characters'] <> '\\\\N' THEN apoc.convert.fromJsonList(row['characters'])
+             ELSE null
+         END AS characters_value
+    WHERE job_value IS NOT NULL OR characters_value IS NOT NULL
+    MERGE (p)-[r:PLAYED_ROLE_IN]->(m)
+    SET r += CASE
+        WHEN job_value IS NOT NULL THEN {job: job_value} ELSE {}
+    END
+    SET r += CASE
+        WHEN characters_value IS NOT NULL THEN {characters: characters_value} ELSE {}
+    END
     """
-    tx.run(query, batch=batch)
+    try:
+        tx.run(query, batch=batch)
+    except Exception as e:
+        logging.error(f"Error creating/merging played role relationships batch: {e}. Batch data (first 5): {batch[:5]}")
+        raise
 
 def create_played_role_relationship_indexes(tx):
-    tx.run("CREATE OR REPLACE INDEX played_role_person_nconst FOR (p:Person)-[r:PLAYED_ROLE_IN]-(m:Movie) ON (p.nconst)")
-    tx.run("CREATE OR REPLACE INDEX played_role_movie_tconst FOR (p:Person)-[r:PLAYED_ROLE_IN]-(m:Movie) ON (m.tconst)")
-    print("Indexes created or replaced for PLAYED_ROLE_IN relationships based on Person.nconst and Movie.tconst")
+    try:
+        tx.run("CREATE INDEX played_role_job IF NOT EXISTS FOR ()-[r:PLAYED_ROLE_IN]-() ON (r.job)")
+        tx.run("CREATE INDEX played_role_characters IF NOT EXISTS FOR ()-[r:PLAYED_ROLE_IN]-() ON (r.characters)")
+        logging.info("Indexes created or checked for PLAYED_ROLE_IN relationships on properties 'job' and 'characters'.")
+    except Exception as e:
+        logging.error(f'Error creating relationship indexes: {e}')
+        raise
 
-file_path = "/Users/benzuckerman/Documents/GitHub/7onKevin/Data_Files/princpals.tsv"
-batch_size = 10000
-report_interval = 100000
-total_processed = 0
-start_time = time.time()
+def process_played_role_relationships(driver, file_path, batch_size, report_interval):
+    total_processed = 0
+    start_time = time.time()
+    logging.info("Starting processing of played role relationships.")
 
-with open(file_path, 'r', encoding='utf-8') as tsvfile:
-    reader = csv.DictReader(tsvfile, delimiter='\t')
-    batch = []
-    with driver.session() as session:
-        for row in reader:
-            category = row['category']
-            characters_str = row['characters'].strip() 
+    try:
+        with open(file_path, 'r', encoding='utf-8') as tsvfile:
+            reader = csv.DictReader(tsvfile, delimiter='\t')
+            batch = []
 
-            if category in ['actor', 'actress', 'director', 'writer'] or (category == 'self' and characters_str != '\\N' and characters_str != '"Self"'):
-                batch.append(row)
-                if len(batch) >= batch_size:
-                    session.execute_write(create_played_role_relationships_batch, batch)
+            for i, row in enumerate(reader):
+                try:
+                    category = row['category']
+                    characters_str = row['characters'].strip()
+
+                    if category in ['actor', 'actress', 'director', 'writer'] or (category == 'self' and characters_str != '\\N' and characters_str != '"Self"'):
+                        batch.append(row)
+                        if len(batch) >= batch_size:
+                            try:
+                                with driver.session() as session:
+                                    session.execute_write(create_played_role_relationships_batch, batch)
+                                total_processed += len(batch)
+                                batch = []
+                                if total_processed % report_interval == 0:
+                                    elapsed_time = time.time() - start_time
+                                    logging.info(f"Processed {total_processed} principals and created PLAYED_ROLE_IN relationships in {elapsed_time:.2f} seconds")
+                            except Exception as e:
+                                logging.error(f"Error processing batch: {e}")
+                                break # Or handle the error and continue if appropriate
+                except ValueError as ve:
+                    logging.warning(f"Skipping row {i+1} due to data conversion error: {ve}. Row data: {row}")
+                except Exception as e:
+                    logging.error(f"Error processing row {i+1}: {e}. Row data: {row}")
+
+            if batch:
+                try:
+                    with driver.session() as session:
+                        session.execute_write(create_played_role_relationships_batch, batch)
                     total_processed += len(batch)
-                    batch = []
+                    elapsed_time = time.time() - start_time
+                    logging.info(f"Processed a final {len(batch)} principals and created PLAYED_ROLE_IN relationships in {elapsed_time:.2f} seconds")
+                except Exception as e:
+                    logging.error(f"Error processing final batch: {e}")
 
-                    if total_processed % report_interval == 0:
-                        elapsed_time = time.time() - start_time
-                        print(f"Processed {total_processed} principals and attempted to create PLAYED_ROLE_IN relationships in {elapsed_time:.2f} seconds (only if Person and Movie nodes exist).")
+            try:
+                with driver.session() as session:
+                    session.execute_write(create_played_role_relationship_indexes)
+                    logging.info("Played role relationship index creation process completed.")
+            except Exception as e:
+                logging.error(f"Error creating played role relationship indexes: {e}")
 
-        if batch:
-            session.execute_write(create_played_role_relationships_batch, batch)
-            total_processed += len(batch)
-            elapsed_time = time.time() - start_time
-            print(f"Processed a final {len(batch)} principals and attempted to create PLAYED_ROLE_IN relationships in {elapsed_time:.2f} seconds (only if Person and Movie nodes exist).")
+            elapsed_total_time = time.time() - start_time
+            logging.info(f"Total of {total_processed} principals processed and PLAYED_ROLE_IN relationships attempted in {elapsed_total_time:.2f} seconds.")
 
-        session.execute_write(create_played_role_relationship_indexes)
-    driver.close
-    print("Driver Closed.")
+    except FileNotFoundError:
+        logging.error(f"Error: Principals data file not found at: {file_path}")
+        sys.exit(1)
+    except Exception as e:
+        logging.error(f"An unexpected error occurred during played role relationship processing: {e}")
+        sys.exit(1)
+    finally:
+       pass # default pass because moving session management inside the main execution
+
+if __name__ == "__main__":
+    batch_size = 10000
+    report_interval = 100000
+    try:
+        process_played_role_relationships(driver, file_path, batch_size, report_interval)
+    finally:
+        driver.close
+        logging.info("Neo4j driver closed.")

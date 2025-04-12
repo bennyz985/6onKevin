@@ -12,9 +12,12 @@ load_dotenv()
 uri = os.getenv("NEO4J_URI")
 username = os.getenv("NEO4J_USERNAME")
 password = os.getenv("NEO4J_PASSWORD")
-driver = GraphDatabase.driver(uri, auth=(username, password))
+driver = driver = None
 imdb_data_dir = os.getenv("DATA_DIRECTORY")
 file_path = os.path.join(imdb_data_dir, "titles.tsv")
+
+
+
 
 def create_movie_batch(tx, batch):
     query = """
