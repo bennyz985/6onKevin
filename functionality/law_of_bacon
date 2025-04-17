@@ -1,0 +1,91 @@
+from neo4j import GraphDatabase
+from dotenv import load_dotenv
+import os
+import logging
+import sys
+
+load_dotenv()
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+uri = os.getenv("NEO4J_URI")
+username = os.getenv("NEO4J_USERNAME")
+password = os.getenv("NEO4J_PASSWORD")
+driver = None
+
+try:
+    driver = GraphDatabase.driver(uri, auth=(username, password))
+    logging.info("Successfully connected to Neo4j.")
+except Exception as e:
+    logging.critical(f"Failed to connect to Neo4j: {e}")
+    sys.exit(1)
+
+
+def find_shortest_path(driver, start_name, end_name):
+    """
+    Finds the shortest path between two actors (case-insensitive).
+    """
+
+    def execute_query(tx, start_name, end_name):
+        cypher_query = """
+        MATCH (start_person:Person)
+        WHERE toLower(start_person.primaryName) = toLower($start_name)
+        WITH collect(distinct start_person.nconst) AS start_nconsts
+        MATCH (end_person:Person)
+        WHERE toLower(end_person.primaryName) = toLower($end_name)
+        WITH start_nconsts, collect(distinct end_person.nconst) AS end_nconsts
+        UNWIND start_nconsts AS start_nconst
+        UNWIND end_nconsts AS end_nconst
+        WITH start_nconst, end_nconst
+        MATCH p = shortestPath((start_node:Person {nconst: start_nconst})-[r:PLAYED_ROLE_IN*..50]-(end_node:Person {nconst: end_nconst}))
+        LIMIT 1
+        WITH nodes(p) AS path_nodes, relationships(p) AS path_rels, length(p) AS pathLength
+        UNWIND range(0, pathLength - 1) AS i
+        WITH path_nodes[i] AS node1, path_nodes[i+1] AS node2, path_rels[i] AS r, i
+        WITH collect({
+            personName: CASE
+                WHEN 'Person' IN labels(node1) THEN node1.primaryName
+                WHEN 'Person' IN labels(node2) THEN node2.primaryName
+                ELSE null
+            END,
+            roleCategory: r.category,
+            movieTitle: CASE
+                WHEN 'Movie' IN labels(node1) THEN node1.originalTitle
+                WHEN 'Movie' IN labels(node2) THEN node2.originalTitle
+                ELSE null
+            END,
+            characters: CASE
+                WHEN r.characters IS NOT NULL AND size(r.characters) > 2
+                THEN replace(substring(r.characters, 2, size(r.characters) - 3), '"', '')
+                ELSE null
+            END,
+            order: i
+        }) AS hops
+        UNWIND hops AS hop
+        RETURN hop.personName AS PersonName, hop.roleCategory AS RoleCategory, hop.movieTitle AS MovieTitle, hop.characters AS Characters
+        ORDER BY hop.order
+        """
+        result = tx.run(cypher_query, start_name=start_name, end_name=end_name)
+        records = [record for record in result]
+        return records
+
+    try:
+        records = driver.session().execute_read(execute_query, start_name, end_name)
+        return records
+    except Exception as e:
+        logging.error(f"Error executing query: {e}")
+        return []
+
+if __name__ == "__main__":
+    start_actor = input("Enter the starting actor's name: ")
+    end_actor = input("Enter the ending actor's name: ")
+
+    path_details = find_shortest_path(driver, start_actor, end_actor)
+
+    if path_details:
+        print(f"\nShortest path between {start_actor} and {end_actor}:")
+        for hop in path_details:
+            print(f"Person: {hop['PersonName']}, Role: {hop['RoleCategory']}, Movie: {hop['MovieTitle']}, Character: {hop['Characters']}")
+    else:
+        print(f"\nNo shortest path found between {start_actor} and {end_actor}.")
+
+if driver:
+    driver.close()
