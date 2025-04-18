@@ -11,6 +11,9 @@ after installation add the 'GDS' and 'APOC' plug-ins. [Enabling plugins video](h
 
 ## Config, settings and general setup
 Default database config may need to be edited to allow full permissions to the 'APOC' and 'Graph Data Science' libraries.
+
+Neo4j desktops allows for multiple graph versions, use version 5.26.5
+
 ```bash
 dbms.security.procedures.unrestricted=apoc.*,gds.*,dbms.*
 dbms.security.procedures.allowlist=apoc.*,gds.*,dbms.*
