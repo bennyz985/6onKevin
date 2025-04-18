@@ -18,12 +18,14 @@ file_path_names = os.path.join(imdb_data_dir, "names.tsv")
 file_path_principals = os.path.join(imdb_data_dir, "principals.tsv")
 driver = None
 
+# check for connection
 try:
     driver = GraphDatabase.driver(uri, auth=(username, password))
 except Exception as e:
     logging.critical(f"Failed to connect to Neo4j: {e}")
     sys.exit(1)
 
+#only want to create people who are in pertinent movies
 def get_existing_movie_tconsts(tx):
     query = """
     MATCH (m:Movie)
@@ -32,6 +34,7 @@ def get_existing_movie_tconsts(tx):
     result = tx.run(query)
     return set(record['tconst'] for record in result)
 
+# unwind data off tsv file
 def create_person_batch(tx, batch):
     query = """
     UNWIND $batch AS row
@@ -48,6 +51,7 @@ def create_person_batch(tx, batch):
     except Exception as e:
         logging.error(f"Error executing movie batch: {e}. Batch data (first 5): {batch[:5]}")
 
+#dummy person so index can be established
 def create_single_person(tx):
     query = """
     CREATE (p:Person {nconst: 'temp_nconst_for_index', primaryName: 'Temp Name'})
@@ -63,8 +67,8 @@ def create_person_indexes(tx):
         logging.info("Index created or allready exists for Person.nconst")
     except Exception as e:
         logging.error(f"Error creating index for Person.nconst: {e}")
-        raise  # Raise the error as index creation is important
-
+        raise  
+# make all the people
 def process_person_data(driver, file_path_names, file_path_principals, batch_size, report_interval):
     total_processed = 0
     updated_count = 0
@@ -77,7 +81,7 @@ def process_person_data(driver, file_path_names, file_path_principals, batch_siz
             existing_movie_tconsts = session.execute_read(get_existing_movie_tconsts)
             logging.info(f"Found {len(existing_movie_tconsts)} unique tconsts in Movie nodes.")
 
-            relevant_principals_nconsts = set()
+            relevant_principals_nconsts = set()  #person  must also have a pertinent role in a pertinent movie
             try:
                 with open(file_path_principals, 'r', encoding='utf-8') as tsvfile:
                     reader = csv.DictReader(tsvfile, delimiter='\t')
@@ -93,7 +97,7 @@ def process_person_data(driver, file_path_names, file_path_principals, batch_siz
                 logging.debug(f"Sample relevant nconsts: {list(relevant_principals_nconsts)[:5]}")
             except FileNotFoundError:
                 logging.error(f"Error: Principals data file not found at: {file_path_principals}")
-                sys.exit(1)  # Stop processing if a critical file is missing
+                sys.exit(1)  
             except Exception as e:
                 logging.error(f"Error reading principals data: {e}")
                 return

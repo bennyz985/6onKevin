@@ -18,7 +18,7 @@ driver = None
 imdb_data_dir = os.getenv("DATA_DIRECTORY")
 file_path = os.path.join(imdb_data_dir, "principals.tsv")
 
-
+# check database connection
 try:
     driver = GraphDatabase.driver(uri, auth=(username, password))
 except Exception as e:
@@ -60,6 +60,15 @@ def create_played_role_relationships_batch(tx, batch):
     except Exception as e:
         logging.error(f"Error creating/merging played role relationships batch: {e}. Batch data (first 5): {batch[:5]}")
         raise
+# Not sure if indexing relationships is actually important, but might as well
+def create_played_role_relationship_indexes(tx):
+    try:
+        tx.run("CREATE INDEX played_role_job IF NOT EXISTS FOR ()-[r:PLAYED_ROLE_IN]-() ON (r.job)")
+        tx.run("CREATE INDEX played_role_characters IF NOT EXISTS FOR ()-[r:PLAYED_ROLE_IN]-() ON (r.characters)")
+        logging.info("Indexes created or checked for PLAYED_ROLE_IN relationships on properties 'job' and 'characters'.")
+    except Exception as e:
+        logging.error(f'Error creating relationship indexes: {e}')
+        raise
 
 
 def process_played_role_relationships(driver, file_path, batch_size, report_interval):
@@ -90,7 +99,7 @@ def process_played_role_relationships(driver, file_path, batch_size, report_inte
                                     logging.info(f"Processed {total_processed} principals and created PLAYED_ROLE_IN relationships in {elapsed_time:.2f} seconds")
                             except Exception as e:
                                 logging.error(f"Error processing batch: {e}")
-                                break # Or handle the error and continue if appropriate
+                                break 
                 except ValueError as ve:
                     logging.warning(f"Skipping row {i+1} due to data conversion error: {ve}. Row data: {row}")
                 except Exception as e:

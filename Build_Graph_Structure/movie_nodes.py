@@ -12,13 +12,36 @@ load_dotenv()
 uri = os.getenv("NEO4J_URI")
 username = os.getenv("NEO4J_USERNAME")
 password = os.getenv("NEO4J_PASSWORD")
-driver = driver = None
+driver = None
 imdb_data_dir = os.getenv("DATA_DIRECTORY")
 file_path = os.path.join(imdb_data_dir, "titles.tsv")
 
+#check db connection
+try:
+    driver = GraphDatabase.driver(uri, auth=(username, password))
+except Exception as e:
+    logging.critical(f"Failed to connect to Neo4j: {e}")
+    sys.exit(1)
 
-
-
+def create_movie_index(tx):
+    try:
+        tx.run("CREATE INDEX movie_tconst IF NOT EXISTS FOR (m:Movie) ON (m.tconst)")
+        logging.info("Attempted to create index for Movie.tconst (IF NOT EXISTS).")
+    except Exception as e:
+        logging.error(f"Error creating index for Movie.tconst: {e}")
+        raise
+# need person to build index so other person nodes can be created efficiently
+def create_dummy_movie_node(tx):
+    query = """
+    CREATE (m:Movie {tconst: 'tt_dummy_index'})
+    """
+    try:
+        tx.run(query)
+        logging.info("Created dummy Movie node for indexing.")
+    except Exception as e:
+        logging.error(f"Error creating dummy movie node: {e}")
+        raise
+# unwind data off tsv file
 def create_movie_batch(tx, batch):
     query = """
     UNWIND $batch AS row
@@ -39,19 +62,21 @@ def create_movie_batch(tx, batch):
     except Exception as e:
         logging.error(f"Error executing movie batch: {e}. Batch data (first 5): {batch[:5]}")
 
-def create_movie_indexes(tx):
-    try:
-        tx.run("CREATE INDEX movie_tconst IF NOT EXISTS FOR (m:Movie) ON (m.tconst)")
-        logging.info("Attempted to create index for Movie.tconst (IF NOT EXISTS).")
-    except Exception as e:
-        logging.error(f"Error creating index for Movie.tconst: {e}")
-        raise  # shouldn't hit this check, but if so, something is serioiusly wrong with index creation or graph config, bail out
-
 def process_movie_data(driver, file_path, batch_size, report_interval):
     total_processed = 0
     start_time = time.time()
     elapsed_total_time = 0.0
     logging.info(f"Starting processing of movie data from: {file_path}")
+
+
+    try:
+        with driver.session() as session:
+            session.execute_write(create_dummy_movie_node)
+            session.execute_write(create_movie_index)
+            logging.info("Dummy node and index creation completed before data loading.")
+    except Exception as e:
+        logging.error(f"Error during initial dummy node and index creation: {e}")
+        return
 
     try:
         with open(file_path, 'r', encoding='utf-8') as tsvfile:
@@ -60,27 +85,13 @@ def process_movie_data(driver, file_path, batch_size, report_interval):
 
             for i, row in enumerate(reader):
                 try:
-                    if row['titleType'] in ['movie', 'tvSeries']:  #exclude rows in the file that aren't movies or tv series (ex. short films, movie trailers etc.)
+                    if row['titleType'] == 'movie':
                         batch.append(row)
                         if len(batch) >= batch_size:
                             try:
                                 with driver.session() as session:
                                     with session.begin_transaction() as tx:
-                                        query = r"""
-                                        UNWIND $batch AS row
-                                        MERGE (m:Movie {tconst: row['tconst']})
-                                        SET m += {
-                                            titleType: CASE WHEN row['titleType'] <> '\\\\N' THEN row['titleType'] ELSE null END,
-                                            primaryTitle: CASE WHEN row['primaryTitle'] <> '\\\\N' THEN row['primaryTitle'] ELSE null END,
-                                            originalTitle: CASE WHEN row['originalTitle'] <> '\\\\N' THEN row['originalTitle'] ELSE null END,
-                                            isAdult: CASE WHEN row['isAdult'] <> '\\\\N' THEN toInteger(row['isAdult']) ELSE null END,
-                                            startYear: CASE WHEN row['startYear'] <> '\\\\N' THEN toInteger(row['startYear']) ELSE null END,
-                                            endYear: CASE WHEN row['endYear'] <> '\\\\N' THEN toInteger(row['endYear']) ELSE null END,
-                                            runtimeMinutes: CASE WHEN row['runtimeMinutes'] <> '\\\\N' THEN toInteger(row['runtimeMinutes']) ELSE null END,
-                                            genres: CASE WHEN row['genres'] <> '\\\\N' THEN split(row['genres'], ',') ELSE null END
-                                        }
-                                        """
-                                        tx.run(query, batch=batch)
+                                        create_movie_batch(tx, batch)
                                         tx.commit()
                                 total_processed += len(batch)
                                 batch = []
@@ -89,7 +100,7 @@ def process_movie_data(driver, file_path, batch_size, report_interval):
                                     logging.info(f"Processed and created {total_processed} movie/tvSeries records in {elapsed_time:.2f} seconds.")
                             except Exception as e:
                                 logging.error(f"Error processing batch: {e}")
-                                break  
+                                break
                 except ValueError as ve:
                     logging.warning(f"Skipping row {i+1} due to data conversion error: {ve}. Row data: {row}")
                 except Exception as e:
@@ -99,20 +110,7 @@ def process_movie_data(driver, file_path, batch_size, report_interval):
             try:
                 with driver.session() as session:
                     with session.begin_transaction() as tx:
-                        query = r"""
-                        UNWIND $batch AS row
-                        MERGE (m:Movie {tconst: row['tconst']})
-                        SET m += {
-                            titleType: CASE WHEN row['titleType'] <> '\\\\N' THEN row['titleType'] ELSE null END,
-                            primaryTitle: CASE WHEN row['primaryTitle'] <> '\\\\N' THEN row['primaryTitle'] ELSE null END,
-                            originalTitle: CASE WHEN row['originalTitle'] <> '\\\\N' THEN row['originalTitle'] ELSE null END,
-                            isAdult: CASE WHEN row['isAdult'] <> '\\\\N' THEN toInteger(row['isAdult']) ELSE null END,
-                            startYear: CASE WHEN row['startYear'] <> '\\\\N' THEN toInteger(row['startYear']) ELSE null END,
-                            endYear: CASE WHEN row['endYear'] <> '\\\\N' THEN toInteger(row['endYear']) ELSE null END,
-                            runtimeMinutes: CASE WHEN row['runtimeMinutes'] <> '\\\\N' THEN toInteger(row['runtimeMinutes']) ELSE null END,
-                            genres: CASE WHEN row['genres'] <> '\\\\N' THEN split(row['genres'], ',') ELSE null END
-                        }"""
-                        tx.run(query, batch=batch)
+                        create_movie_batch(tx, batch)
                         tx.commit()
                 total_processed += len(batch)
                 elapsed_time = time.time() - start_time
@@ -120,19 +118,15 @@ def process_movie_data(driver, file_path, batch_size, report_interval):
             except Exception as e:
                 logging.error(f"Error processing final batch: {e}")
 
-        # Index creation
-        try:
-            with driver.session() as session:
-                session.execute_write(create_movie_indexes)
-                logging.info("Movie index creation process completed.")
-        except Exception as final_index_e:
-            if "Transaction failed" in str(final_index_e):
-                logging.warning(f"Transaction failed during index creation, but continuing: {final_index_e}")
-            else:
-                logging.error(f"Error during final index handling: {final_index_e}")
-
         elapsed_total_time = time.time() - start_time
         logging.info(f"Total of {total_processed} movie/tvSeries records processed in {elapsed_total_time:.2f} seconds.")
+
+        try:
+            with driver.session() as session:
+                session.execute_write(lambda tx: tx.run("MATCH (m:Movie {tconst: 'tt_dummy_index'}) DELETE m"))
+                logging.info("Dummy movie node cleaned up.")
+        except Exception as e:
+            logging.warning(f"Error cleaning up dummy movie node: {e}")
 
     except FileNotFoundError as e:
         logging.error(f"Error: IMDB data file not found at: {e}")
@@ -141,13 +135,15 @@ def process_movie_data(driver, file_path, batch_size, report_interval):
         logging.error(f"An unexpected error occurred during movie data processing: {e}")
 
     finally:
-        pass # blanket pass because closing the driver here was creating issues in some cases, driver session management into actual execution
+        if driver:
+            driver.close()
+            logging.info("Neo4j driver closed.")
 
 if __name__ == "__main__":
     batch_size = 10000
     report_interval = 100000
-    try:
+    if driver:
         process_movie_data(driver, file_path, batch_size, report_interval)
-    finally:
-        driver.close()
-        logging.info("Neo4j driver closed.")
+    else:logging.critical(f"Driver Failure")
+    sys.exit(1)
+    

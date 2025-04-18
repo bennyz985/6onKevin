@@ -19,6 +19,33 @@ except Exception as e:
     sys.exit(1)
 
 
+def validate_actor(driver, actor_name):
+    """
+    Validates if an actor exists in the database.
+
+    Args:
+        driver: The Neo4j driver.
+        actor_name: The name of the actor to validate.
+
+    Returns:
+        True if the actor exists, False otherwise.
+    """
+    def execute_validation_query(tx, actor_name):
+        cypher_query = """
+            MATCH (p:Person)
+            WHERE toLower(p.primaryName) = toLower($actor_name)
+            RETURN p
+            LIMIT 1
+        """
+        result = tx.run(cypher_query, actor_name=actor_name)
+        return result.single() is not None
+
+    try:
+        return driver.session().execute_read(execute_validation_query, actor_name)
+    except Exception as e:
+        logging.error(f"Error validating actor: {e}")
+        return False  # Return False on error to avoid infinite loop
+
 def find_shortest_path(driver, start_name, end_name):
     """
     Finds the shortest path between two actors (case-insensitive).
@@ -53,9 +80,9 @@ def find_shortest_path(driver, start_name, end_name):
                 ELSE null
             END,
             characters: CASE
-                WHEN r.characters IS NOT NULL AND size(r.characters) > 2
+                WHEN r.category in ['actor','actress','self']
                 THEN replace(substring(r.characters, 2, size(r.characters) - 3), '"', '')
-                ELSE null
+                ELSE 'n/a'
             END,
             order: i
         }) AS hops
@@ -74,18 +101,32 @@ def find_shortest_path(driver, start_name, end_name):
         logging.error(f"Error executing query: {e}")
         return []
 
-if __name__ == "__main__":
-    start_actor = input("Enter the starting actor's name: ")
-    end_actor = input("Enter the ending actor's name: ")
 
+
+if __name__ == "__main__":
+    start_actor = ""
+    end_actor = ""
+
+    while not start_actor:
+        start_actor = input("Enter the starting actor's name: ")
+        if not validate_actor(driver, start_actor):
+            logging.info(f"Couldn't find '{start_actor}'. Please enter a different actor's name.")
+            start_actor = ""  # Reset to loop again
+
+    while not end_actor:
+        end_actor = input("Enter the ending actor's name: ")
+        if not validate_actor(driver, end_actor):
+            logging.info(f"Couldn't find '{end_actor}'. Please enter a different actor's name.")
+            end_actor = ""  # Reset to loop again
     path_details = find_shortest_path(driver, start_actor, end_actor)
 
     if path_details:
-        print(f"\nShortest path between {start_actor} and {end_actor}:")
+        logging.info(f"Shortest path between {start_actor} and {end_actor}:")
         for hop in path_details:
-            print(f"Person: {hop['PersonName']}, Role: {hop['RoleCategory']}, Movie: {hop['MovieTitle']}, Character: {hop['Characters']}")
+            logging.info(f"Person: {hop['PersonName']}, Role: {hop['RoleCategory']}, Movie: {hop['MovieTitle']}, Character: {hop['Characters']}")
     else:
-        print(f"\nNo shortest path found between {start_actor} and {end_actor}.")
+        logging.info(f"No shortest path found between {start_actor} and {end_actor}.")
 
 if driver:
     driver.close()
+    logging.info("Neo4j driver closed.")
