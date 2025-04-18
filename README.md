@@ -1,6 +1,6 @@
 # Half a dozen degrees of Kevin Bacon
 
-This project builds a Neo4j graph database using a subset of the IMDB movie database and then leverages Neo4j's GDS and Apoc libraries to find relationship chains and node similarity to Kevin Bacon.
+This project builds a Neo4j graph database using a subset of the IMDB movie database and then finds optimal shortest paths from a starting actor back to Kevin Bacon (or any other actor in the graph).
 
 ## Neo4J Installation
 
