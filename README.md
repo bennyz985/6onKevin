@@ -30,6 +30,11 @@ Environment variables.  Neo4j connection details need to be established in a `.e
         DATA_DIRECTORY="YourLocalDirectoryFilePath"
 ```
 
+## Run order
+
+When building out the graph movies needs to be run first, followed by people followed by relationships.  
+Each script needs nodes and/ or relationships established in the previous script to run properly.
+
 ## Source data
 The necessary IMDB dataset files (`title.tsv`, `name.tsv`, `principals.tsv`) are located in the `data_files` (should get coppied automatically when you clone the repository).
 
