@@ -144,6 +144,4 @@ if __name__ == "__main__":
     report_interval = 100000
     if driver:
         process_movie_data(driver, file_path, batch_size, report_interval)
-    else:logging.critical(f"Driver Failure")
-    sys.exit(1)
     
