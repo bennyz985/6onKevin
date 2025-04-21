@@ -46,56 +46,108 @@ def validate_actor(driver, actor_name):
         logging.error(f"Error validating actor: {e}")
         return False  # Return False on error to avoid infinite loop
 
-def find_shortest_path(driver, start_name, end_name):
+def find_shortest_path(driver, start_name, end_name, must_include_name=None):
     """
-    Finds the shortest path between two actors (case-insensitive).
+    Finds the shortest path between two actors (case-insensitive),
+    optionally including a must-include person.
     """
 
-    def execute_query(tx, start_name, end_name):
-        cypher_query = """
-        MATCH (start_person:Person)
-        WHERE toLower(start_person.primaryName) = toLower($start_name)
-        WITH collect(distinct start_person.nconst) AS start_nconsts
-        MATCH (end_person:Person)
-        WHERE toLower(end_person.primaryName) = toLower($end_name)
-        WITH start_nconsts, collect(distinct end_person.nconst) AS end_nconsts
-        UNWIND start_nconsts AS start_nconst
-        UNWIND end_nconsts AS end_nconst
-        WITH start_nconst, end_nconst
-        MATCH p = shortestPath((start_node:Person {nconst: start_nconst})-[r:PLAYED_ROLE_IN*..50]-(end_node:Person {nconst: end_nconst}))
-        LIMIT 1
-        WITH nodes(p) AS path_nodes, relationships(p) AS path_rels, length(p) AS pathLength
-        UNWIND range(0, pathLength - 1) AS i
-        WITH path_nodes[i] AS node1, path_nodes[i+1] AS node2, path_rels[i] AS r, i
-        WITH collect({
-            personName: CASE
-                WHEN 'Person' IN labels(node1) THEN node1.primaryName
-                WHEN 'Person' IN labels(node2) THEN node2.primaryName
-                ELSE null
-            END,
-            roleCategory: r.category,
-            movieTitle: CASE
-                WHEN 'Movie' IN labels(node1) THEN node1.originalTitle
-                WHEN 'Movie' IN labels(node2) THEN node2.originalTitle
-                ELSE null
-            END,
-            characters: CASE
-                WHEN r.category in ['actor','actress','self']
-                THEN replace(substring(r.characters, 2, size(r.characters) - 3), '"', '')
-                ELSE 'n/a'
-            END,
-            order: i
-        }) AS hops
-        UNWIND hops AS hop
-        RETURN hop.personName AS PersonName, hop.roleCategory AS RoleCategory, hop.movieTitle AS MovieTitle, hop.characters AS Characters
-        ORDER BY hop.order
-        """
-        result = tx.run(cypher_query, start_name=start_name, end_name=end_name)
-        records = [record for record in result]
-        return records
+    def execute_query(tx, start_name, end_name, must_include_name):
+        def _format_path(path_nodes, path_rels):
+            formatted_path = []
+            for i in range(len(path_nodes) - 1):
+                node1 = path_nodes[i]
+                node2 = path_nodes[i + 1]
+                rel = path_rels[i]
+                characters = rel.get('characters', '')
+                cleaned_characters = 'n/a'
+                if rel.get('category') in ['actor', 'actress', 'self'] and characters and len(characters) >= 2:
+                    cleaned_characters = characters[1:-1].replace('"', '')
+
+                formatted_path.append({
+                    "PersonName": node1.get('primaryName') if 'Person' in node1.labels else (node2.get('primaryName') if 'Person' in node2.labels else None),
+                    "RoleCategory": rel.get('category'),
+                    "MovieTitle": node1.get('originalTitle') if 'Movie' in node1.labels else (node2.get('originalTitle') if 'Movie' in node2.labels else None),
+                    "Characters": cleaned_characters,
+                    "order": i
+                })
+            return formatted_path
+
+        if must_include_name:
+            logging.info(f"Finding shortest path between '{start_name}' and '{end_name}' via '{must_include_name}'.")
+            cypher_path1 = """
+            MATCH (start:Person) WHERE toLower(start.primaryName) = toLower($start_name)
+            MATCH (intermediate:Person) WHERE toLower(intermediate.primaryName) = toLower($must_include_name)
+            MATCH p1 = shortestPath((start)-[r:PLAYED_ROLE_IN*..50]-(intermediate))
+            RETURN nodes(p1) AS path1_nodes, relationships(p1) AS path1_rels
+            LIMIT 1
+            """
+            result1 = tx.run(cypher_path1, start_name=start_name, must_include_name=must_include_name).single()
+            #logging.info(f"Result 1: {result1}")
+
+            cypher_path2 = """
+            MATCH (intermediate:Person) WHERE toLower(intermediate.primaryName) = toLower($must_include_name)
+            MATCH (end:Person) WHERE toLower(end.primaryName) = toLower($end_name)
+            MATCH p2 = shortestPath((intermediate)-[r:PLAYED_ROLE_IN*..50]-(end))
+            RETURN nodes(p2) AS path2_nodes, relationships(p2) AS path2_rels
+            LIMIT 1
+            """
+            result2 = tx.run(cypher_path2, must_include_name=must_include_name, end_name=end_name).single()
+            #logging.info(f"Result 2: {result2}")
+
+            if result1 and result2:
+                path1_nodes = result1.get('path1_nodes', [])
+                path1_rels = result1.get('path1_rels', [])
+                path2_nodes = result2.get('path2_nodes', [])
+                path2_rels = result2.get('path2_rels', [])
+
+                if path1_nodes and path2_nodes and path1_nodes[-1].element_id == path2_nodes[0].element_id:
+                    combined_nodes = path1_nodes + path2_nodes[1:]
+                    combined_rels = path1_rels + path2_rels
+                    return _format_path(combined_nodes, combined_rels)
+                else:
+                    logging.info("No connecting path found through the intermediate person (node ID mismatch).")
+                    return []
+            else:
+                logging.info("Could not find shortest path for one or both segments.")
+                return []
+
+        else:
+            logging.info(f"Finding direct shortest path between '{start_name}' and '{end_name}'.")
+            cypher_query = """
+            MATCH (start:Person) WHERE toLower(start.primaryName) = toLower($start_name)
+            MATCH (end:Person) WHERE toLower(end.primaryName) = toLower($end_name)
+            MATCH p = shortestPath((start)-[r:PLAYED_ROLE_IN*..50]-(end))
+            UNWIND relationships(p) AS rel
+            WITH nodes(p) AS path_nodes, collect(rel) AS path_rels
+            UNWIND range(0, size(path_nodes) - 2) AS i
+            WITH path_nodes[i] AS node1, path_nodes[i+1] AS node2, path_rels[i] AS rel, i
+            RETURN
+                CASE
+                    WHEN 'Person' IN labels(node1) THEN node1.primaryName
+                    WHEN 'Person' IN labels(node2) THEN node2.primaryName
+                    ELSE null
+                END AS PersonName,
+                rel.category AS RoleCategory,
+                CASE
+                    WHEN 'Movie' IN labels(node1) THEN node1.originalTitle
+                    WHEN 'Movie' IN labels(node2) THEN node2.originalTitle
+                    ELSE null
+                END AS MovieTitle,
+                CASE
+                    WHEN rel.category in ['actor','actress','self']
+                    THEN replace(substring(rel.characters, 2, size(rel.characters) - 3), '"', '')
+                    ELSE 'n/a'
+                END AS Characters,
+                i AS order
+            ORDER BY i
+            """
+            result = tx.run(cypher_query, start_name=start_name, end_name=end_name)
+            records = [record for record in result]
+            return records
 
     try:
-        records = driver.session().execute_read(execute_query, start_name, end_name)
+        records = driver.session().execute_read(execute_query, start_name, end_name, must_include_name)
         return records
     except Exception as e:
         logging.error(f"Error executing query: {e}")
@@ -106,19 +158,31 @@ def find_shortest_path(driver, start_name, end_name):
 if __name__ == "__main__":
     start_actor = ""
     end_actor = ""
+    must_include_actor = ""
 
     while not start_actor:
         start_actor = input("Enter the starting actor's name: ")
         if not validate_actor(driver, start_actor):
             logging.info(f"Couldn't find '{start_actor}'. Please enter a different actor's name.")
-            start_actor = ""  # Reset to loop again
+            start_actor = ""
 
     while not end_actor:
         end_actor = input("Enter the ending actor's name: ")
         if not validate_actor(driver, end_actor):
             logging.info(f"Couldn't find '{end_actor}'. Please enter a different actor's name.")
-            end_actor = ""  # Reset to loop again
-    path_details = find_shortest_path(driver, start_actor, end_actor)
+            end_actor = ""
+
+    include_intermediate = input("Do you want to specify an actor that MUST be included in the path? (yes/no): ").lower()
+    if include_intermediate == 'yes':
+        while not must_include_actor:
+            must_include_actor = input("Enter the name of the actor that MUST be included: ")
+            if not validate_actor(driver, must_include_actor):
+                logging.info(f"Couldn't find '{must_include_actor}'. Please enter a different actor's name.")
+                must_include_actor = ""
+
+        path_details = find_shortest_path(driver, start_actor, end_actor, must_include_actor)
+    else:
+        path_details = find_shortest_path(driver, start_actor, end_actor)
 
     if path_details:
         logging.info(f"Shortest path between {start_actor} and {end_actor}:")
