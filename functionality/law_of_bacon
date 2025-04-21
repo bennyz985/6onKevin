@@ -20,16 +20,8 @@ except Exception as e:
 
 
 def validate_actor(driver, actor_name):
-    """
-    Validates if an actor exists in the database.
 
-    Args:
-        driver: The Neo4j driver.
-        actor_name: The name of the actor to validate.
-
-    Returns:
-        True if the actor exists, False otherwise.
-    """
+    #Validates if an actor exists in the database, I'm making typos all the time
     def execute_validation_query(tx, actor_name):
         cypher_query = """
             MATCH (p:Person)
@@ -44,13 +36,11 @@ def validate_actor(driver, actor_name):
         return driver.session().execute_read(execute_validation_query, actor_name)
     except Exception as e:
         logging.error(f"Error validating actor: {e}")
-        return False  # Return False on error to avoid infinite loop
+        return False  # default to false, ended up in an infinite loop here
 
 def find_shortest_path(driver, start_name, end_name, must_include_name=None):
-    """
-    Finds the shortest path between two actors (case-insensitive),
-    optionally including a must-include person.
-    """
+
+#Finds the shortest path between two actors, and path traverses a third person if the they are defined.
 
     def execute_query(tx, start_name, end_name, must_include_name):
         def _format_path(path_nodes, path_rels):
