@@ -1,0 +1,107 @@
+from neo4j import GraphDatabase
+from dotenv import load_dotenv
+import os
+import logging
+import sys
+
+load_dotenv()
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+
+uri = os.getenv("NEO4J_URI")
+username = os.getenv("NEO4J_USERNAME")
+password = os.getenv("NEO4J_PASSWORD")
+driver = None
+
+def validate_actor(driver, actor_name):
+    #Validates if an actor exists in the database, I'm making typos all the time
+    def execute_validation_query(tx, actor_name):
+        cypher_query = """
+            MATCH (p:Person)
+            WHERE toLower(p.primaryName) = toLower($actor_name)
+            RETURN p
+            LIMIT 1
+        """
+        result = tx.run(cypher_query, actor_name=actor_name)
+        return result.single() is not None
+
+    try:
+        return driver.session().execute_read(execute_validation_query, actor_name)
+    except Exception as e:
+        logging.error(f"Error validating actor: {e}")
+        return False  # Return False on error to avoid infinite loop
+
+
+def find_weightiest_path(tx, start_actor_name):
+    # Query to find the weightiest path, parameterized by startActorName
+    query = """
+        MATCH (startActor:Person {primaryName: $start_actor_name})
+        WITH startActor, {actorName:startActor.primaryName,actorCentrality:startActor.degreeCentrality} as data1
+        MATCH (startActor)-[:PLAYED_ROLE_IN]->(m1:Movie)
+        ORDER BY m1.degreeCentrality DESC
+        LIMIT 1
+        WITH startActor, data1, m1 AS topMovie1, {movieTitle:m1.originalTitle,movieCentrality:m1.degreeCentrality} as data2
+        MATCH (topMovie1)<-[:PLAYED_ROLE_IN]-(a2:Person)
+        ORDER BY a2.degreeCentrality DESC
+        LIMIT 1
+        WITH startActor,data1,topMovie1,data2, a2 AS topActor2, {actorName:a2.primaryName,actorCentrality:a2.degreeCentrality} as data3
+        MATCH (topActor2)-[:PLAYED_ROLE_IN]->(m2:Movie)
+        WHERE m2 <> topMovie1 // Ensure we don't go back to the previous movie immediately
+        ORDER BY m2.degreeCentrality DESC
+        LIMIT 1
+        WITH startActor,data1,topMovie1,data2, topActor2, data3, m2 AS topMovie2 ,{movieTitle:m2.originalTitle,movieCentrality:m2.degreeCentrality} as data4
+        MATCH (topMovie2)<-[:PLAYED_ROLE_IN]-(a3:Person)
+        WHERE a3 <> startActor AND a3 <> topActor2 // Ensure we don't go back to previous actors immediately
+        ORDER BY a3.degreeCentrality DESC
+        LIMIT 1
+        WITH startActor,data1, topMovie1,data2, topActor2,data3,topMovie2,data4, a3 AS topActor3,
+        {actorName:a3.primaryName,actorCentrality:a3.degreeCentrality} as data5
+        MATCH (topActor3)-[:PLAYED_ROLE_IN]->(m3:Movie)
+        WHERE m3 <> topMovie1 AND m3 <> topMovie2 // Ensure we don't go back to previous movies immediately
+        ORDER BY m3.degreeCentrality DESC
+        LIMIT 1
+        WITH startActor,data1, topMovie1,data2, topActor2,data3, topMovie2,data4, topActor3,data5, m3 as topMovie3,{movieTitle:m3.originalTitle,movieCentrality:m3.degreeCentrality} as data6
+        MATCH(topMovie3)<-[:PLAYED_ROLE_IN]-(a4:Person)
+        WHERE a4 <> startActor and a4 <> topActor2 and a4 <> topActor3
+        order by a4.degreeCentrality desc
+        limit 1
+        RETURN [data1, data2, data3, data4, data5, data6, {actorName:a4.primaryName,actorCentrality:a4.degreeCentrality}] AS pathNodes
+    """
+    try:
+        result = tx.run(query, start_actor_name=start_actor_name)
+        record = result.single()
+        if record:
+            path_nodes = record["pathNodes"]
+            return path_nodes
+        else:
+            logging.warning(f"No path found for start actor: {start_actor_name}")
+            return None
+    except Exception as e:
+        logging.error(f"Error executing query: {e}")
+        raise 
+
+
+if __name__ == "__main__":
+    try:
+        driver = GraphDatabase.driver(uri, auth=(username, password))
+        logging.info("Successfully connected to Neo4j.")
+
+        start_actor = ""
+        while not start_actor:
+            start_actor = input("Enter the starting actor's name: ")
+            if not validate_actor(driver, start_actor):
+                logging.info(
+                    f"Couldn't find '{start_actor}'. Please enter a different actor's name.")
+                start_actor = "" 
+
+        with driver.session() as session:
+            path = session.execute_read(find_weightiest_path, start_actor)
+            if path:
+                formatted_path = "\n".join(map(str, path))
+                print(formatted_path)
+    except Exception as e:
+        logging.error(f"An error occurred: {e}")
+    finally:
+        if driver:
+            driver.close()
+        logging.info("Neo4j driver closed.")

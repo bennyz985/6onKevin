@@ -1,0 +1,91 @@
+from neo4j import GraphDatabase
+from dotenv import load_dotenv
+import os
+import logging
+import sys
+
+load_dotenv()
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+uri = os.getenv("NEO4J_URI")
+username = os.getenv("NEO4J_USERNAME")
+password = os.getenv("NEO4J_PASSWORD")
+graph_name = "movie_projection"
+node_labels = ["Person", "Movie"]
+relationship_type = "PLAYED_ROLE_IN"
+relationship_property = {}
+centrality_property_name = "degreeCentrality"
+driver = None
+
+try:
+    driver = GraphDatabase.driver(uri, auth=(username, password))
+    logging.info("Successfully connected to Neo4j.")
+except Exception as e:
+    logging.critical(f"Failed to connect to Neo4j: {e}")
+    sys.exit(1)
+
+
+def calculate_degree_centrality(tx, graph_name, node_labels, relationship_type, relationship_property,
+                               centrality_property_name):
+    """
+    Projects a graph, calculates degree centrality for each node, and writes
+    the centrality back to the original nodes in the database.
+
+    Args:
+        tx: The Neo4j transaction object.
+        graph_name: The name to use for the projected graph.
+        node_labels: A list of node labels to include in the projection.
+        relationship_type: The type of relationship to include.
+        relationship_property: Properties of the relationship to include.  Can be an empty dict.
+        centrality_property_name: The name of the node property to store the centrality.
+    """
+
+    # Project the graph
+    project_query = """
+        CALL gds.graph.project(
+            $graph_name,
+            $node_labels,
+            {
+                $relationship_type: {
+                    type: $relationship_type,
+                    properties: $relationship_property,
+                    orientation: 'UNDIRECTED'
+                }
+            }
+        )
+        YIELD graphName
+        RETURN graphName
+    """
+    result = tx.run(project_query, graph_name=graph_name, node_labels=node_labels,
+                    relationship_type=relationship_type, relationship_property=relationship_property)
+    logging.info(f"Graph projection result: {result.single()[0]}")  # Log the graph name
+
+    # Calculate degree centrality and write back to the database
+    centrality_query = """
+        CALL gds.degree.stream($graph_name)
+        YIELD nodeId, score
+        WITH gds.util.asNode(nodeId) as node, score
+        SET node.$centrality_property_name = score
+        RETURN count(*) AS nodesUpdated
+    """
+    result = tx.run(centrality_query, graph_name=graph_name, centrality_property_name=centrality_property_name)
+    record = result.single()  # Get the single result record
+    if record:
+        nodes_updated = record["nodesUpdated"]
+        logging.info(
+            f"Number of nodes updated with degree centrality: {nodes_updated}")
+    else:
+        logging.warning("No nodes were updated with degree centrality.")
+
+    # Destroy projection
+    drop_graph_query = "CALL gds.graph.drop($graph_name) YIELD graphName"
+    result = tx.run(drop_graph_query, graph_name=graph_name)
+    logging.info(f"Dropped graph: {result.single()[0]}")
+
+
+if __name__ == "__main__":
+    with driver.session() as session:
+        session.execute_write(calculate_degree_centrality, graph_name, node_labels, relationship_type,
+                              relationship_property, centrality_property_name)
+
+    driver.close()
+    logging.info("Neo4j driver closed.")
