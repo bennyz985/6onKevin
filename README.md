@@ -1,6 +1,10 @@
 # Half a dozen degrees of Kevin Bacon
 
-This project builds a Neo4j graph database using a subset of the IMDB movie database and then finds optimal shortest paths from a starting actor back to Kevin Bacon (or any other actor in the graph).
+This project builds a Neo4j graph database using a subset of the IMDB movie database.
+It has functionality for: 
+        * finding the shortest path traversals between two people in the graph
+        * recomending similar movies based on actor and genre overlap
+        * finding important paths through the graph using a few different GDS procedures for evaluating centrality
 
 ## Neo4J Installation
 
@@ -12,7 +16,8 @@ after installation add the 'GDS' and 'APOC' plug-ins. [Enabling plugins video](h
 ## Config, settings and general setup
 Default database config may need to be edited to allow full permissions to the 'APOC' and 'Graph Data Science' libraries.
 
-Neo4j desktops allows for multiple graph versions, use version 5.26.5
+Neo4j desktops allows for multiple graph versions, while most versions are backwards compatible,
+this has all been tested on version 5.26.5
 
 ```bash
 dbms.security.procedures.unrestricted=apoc.*,gds.*,dbms.*

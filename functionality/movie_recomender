@@ -1,0 +1,115 @@
+from neo4j import GraphDatabase
+from dotenv import load_dotenv
+import os
+import logging
+import sys
+
+load_dotenv()
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+uri = os.getenv("NEO4J_URI")
+username = os.getenv("NEO4J_USERNAME")
+password = os.getenv("NEO4J_PASSWORD")
+driver = None
+
+try:
+    driver = GraphDatabase.driver(uri, auth=(username, password))
+    logging.info("Successfully connected to Neo4j.")
+except Exception as e:
+    logging.critical(f"Failed to connect to Neo4j: {e}")
+    sys.exit(1)
+
+
+def validate_movie(driver, movie_title):
+
+    def execute_validation_query(tx, movie_title):
+        cypher_query = """
+            MATCH (m:Movie)
+            WHERE toLower(m.primaryTitle) = toLower($movie_title)
+            RETURN m
+            LIMIT 1
+        """
+        result = tx.run(cypher_query, movie_title=movie_title)
+        return result.single() is not None
+
+    try:
+        return driver.session().execute_read(execute_validation_query, movie_title)
+    except Exception as e:
+        logging.error(f"Error validating movie: {e}")
+        return False
+
+def get_movie_recommendations(driver, movie_title, num_recommendations=5):
+    # to do: find better way of ordering initial movie match.  Multiple films with the same title are leading to unexpected results
+    def execute_recommendation_query(tx, movie_title, num_recommendations):
+        cypher_query = """
+            MATCH (m:Movie)
+            WHERE toLower(m.originalTitle) = toLower($movie_title)
+            WITH m AS targetMovie
+            MATCH (m2:Movie)
+            WHERE m2 <> targetMovie
+            // Use jaccard similarity to find the overlap in  genre arrays between two movies
+            WITH targetMovie, m2,
+                CASE
+                    WHEN targetMovie.genres IS NULL OR m2.genres IS NULL THEN 0.0
+                    ELSE toFloat(size([x IN targetMovie.genres WHERE x IN m2.genres])) / toFloat(size(targetMovie.genres) + size(m2.genres) - size([x IN targetMovie.genres WHERE x IN m2.genres]))
+                END AS genreSimilarity
+            // find cast overlap between the two movies easier to do with relationship matching as opposed to previous comparison of genre where the property exists on the node
+            MATCH (targetMovie)<-[:PLAYED_ROLE_IN]-(a:Person)-[:PLAYED_ROLE_IN]->(m2), (targetMovie)<-[:PLAYED_ROLE_IN]-(at1:Person), (m2)<-[:PLAYED_ROLE_IN]-(at2:Person)
+            WITH targetMovie, m2, genreSimilarity, count(a) AS sharedActorsCount, count(DISTINCT at1) as targetMovieActorCount, count(DISTINCT at2) as m2ActorCount
+            //Simple absolute value of movie release year
+            WITH targetMovie, m2, genreSimilarity, sharedActorsCount, targetMovieActorCount, m2ActorCount, abs(targetMovie.startYear - m2.startYear) as yearDifference
+            // carry forward various similarity computations for use in weighted final similarity determination
+            WITH targetMovie, m2, genreSimilarity, sharedActorsCount, targetMovieActorCount, m2ActorCount, yearDifference,
+                // weight the different similarities, genre similarity  most important followed by actor similarity, release year barely important at all
+                (genreSimilarity * 0.5) + (toFloat(sharedActorsCount) / toFloat(targetMovieActorCount + m2ActorCount)) * 0.4 + (1.0 - (yearDifference/100.0)) * 0.1 AS similarity,
+                toFloat(sharedActorsCount) / toFloat(targetMovieActorCount + m2ActorCount) AS sharedCastPercentage
+            WHERE similarity IS NOT NULL
+            ORDER BY similarity DESC
+            LIMIT $num_recommendations
+            RETURN m2.originalTitle AS title, similarity, genreSimilarity * 100 as genreSimilarityPercentage, sharedCastPercentage
+            """
+        result = tx.run(cypher_query, movie_title=movie_title, num_recommendations=num_recommendations)
+        return [{"title": record["title"],
+                 "similarity": record["similarity"],
+                 "genreSimilarityPercentage": record["genreSimilarityPercentage"],
+                 "sharedCastPercentage": record["sharedCastPercentage"]}
+                for record in result]
+
+    try:
+        return driver.session().execute_read(execute_recommendation_query, movie_title, num_recommendations)
+    except Exception as e:
+        logging.error(f"Error executing recommendation query: {e}")
+        return []
+
+
+if __name__ == "__main__":
+    start_movie = ""
+    num_recommendations = 0
+
+    while not start_movie:
+        start_movie = input("Enter the title of the movie to get recommendations for: ")
+        if not validate_movie(driver, start_movie):
+            logging.info(f"Couldn't find '{start_movie}'. Please enter a valid movie title.")
+            start_movie = ""  # Reset to loop again
+
+    while num_recommendations <= 0:
+        try:
+            num_recommendations = int(input("Enter the number of recommendations to retrieve: "))
+            if num_recommendations <= 0:
+                logging.info("Number of recommendations must be greater than 0. Please try again.")
+        except ValueError:
+            logging.info("Invalid input. Please enter a valid number.")
+            num_recommendations = 0
+
+    recommendations = get_movie_recommendations(driver, start_movie, num_recommendations)
+
+    if recommendations:
+        logging.info(f"Movie recommendations for '{start_movie}':")
+        for movie in recommendations:
+            logging.info(
+                f"Title: {movie['title']}, Overall Similarity: {movie['similarity']:.4f}, GenreOverlapPercentage: {movie['genreSimilarityPercentage']:.2f}%, SharedCastPercentage: {movie['sharedCastPercentage']:.2f}%")
+    else:
+        logging.info(f"No recommendations found for '{start_movie}'.")
+
+    if driver:
+        driver.close()
+        logging.info("Neo4j driver closed.")
